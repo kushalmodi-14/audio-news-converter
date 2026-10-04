@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { UploadCloud, FileAudio, Loader2, CheckCircle2, Settings, XCircle, ListMusic } from "lucide-react";
+import { toast } from "sonner";
 import { processPDF } from "@/lib/pdfUtils";
 import { generateAndStitchAudio } from "@/lib/audioUtils";
 
@@ -103,7 +104,11 @@ export default function Home() {
         setProgress({ stage: "Cancelled", percent: 0 });
       } else {
         setProgress({ stage: "Error occurred", percent: 0 });
-        alert("An error occurred during processing. Ensure Hugging Face Space URL is correct or check the console.");
+        if (err.message.includes("503") || err.message.includes("high demand")) {
+          toast.error("AI is experiencing high demand. Please wait a few seconds and click Retry.");
+        } else {
+          toast.error(err.message || "An unexpected error occurred during processing.");
+        }
       }
     } finally {
       setIsProcessing(false);

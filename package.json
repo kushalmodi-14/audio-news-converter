@@ -19,6 +19,7 @@
     "pdfjs-dist": "^6.3.289",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "sonner": "^2.0.8",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
