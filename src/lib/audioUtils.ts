@@ -195,7 +195,16 @@ export async function generateAndStitchAudio(
   await ffmpeg.writeFile('concat.txt', concatList);
 
   onProgress("Finalizing MP3 export...", 95);
-  await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c:a', 'libmp3lame', 'output.mp3']);
+  await ffmpeg.exec([
+    '-f', 'concat', 
+    '-safe', '0', 
+    '-i', 'concat.txt', 
+    '-c:a', 'libmp3lame', 
+    '-metadata', 'title=Gujarati News Audio',
+    '-metadata', 'artist=AI News Reader',
+    '-metadata', 'album=Gujarati PDF to MP3 Converter',
+    'output.mp3'
+  ]);
 
   const data = await ffmpeg.readFile('output.mp3');
   const finalBlob = new Blob([data as any], { type: 'audio/mp3' });
