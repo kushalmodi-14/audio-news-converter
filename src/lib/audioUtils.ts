@@ -70,8 +70,6 @@ export async function generateAndStitchAudio(
 
   const audioBlobs: Blob[] = [];
   const timestamps: { title: string; timeStr: string }[] = [];
-  let currentDurationSeconds = 0;
-  
   let client: any = null;
   try {
     onProgress("Connecting to Space (waking up if sleeping)...", 55);
@@ -80,28 +78,46 @@ export async function generateAndStitchAudio(
     throw new Error(`Failed to connect to Hugging Face Space. Error: ${err}`);
   }
 
-  // Calculate total chunks for progress tracking
-  const articleChunks = articles.map((article, i) => {
+  // Calculate total chunks and flatten them for parallel processing
+  type ChunkTask = {
+    globalIndex: number;
+    articleIndex: number;
+    isFirstChunkOfArticle: boolean;
+    text: string;
+    blob?: Blob;
+  };
+
+  const tasks: ChunkTask[] = [];
+  let globalIndex = 0;
+
+  for (let i = 0; i < articles.length; i++) {
+    const article = articles[i];
     // "હવે પછીના સમાચાર" means "Next news"
     const prefix = i > 0 ? "હવે પછીના સમાચાર. " : "";
     const textToSpeak = `${prefix}${article.headline}. ${article.body}`;
-    return chunkText(textToSpeak);
-  });
-  const totalChunks = articleChunks.reduce((acc, chunks) => acc + chunks.length, 0);
-  let processedChunks = 0;
-
-  for (let i = 0; i < articles.length; i++) {
-    if (isCancelled()) throw new Error("Cancelled by user");
+    const chunks = chunkText(textToSpeak);
     
-    // Record timestamp for the start of this article
-    timestamps.push({ title: articles[i].headline, timeStr: formatTime(currentDurationSeconds) });
-    
-    const chunks = articleChunks[i];
-
     for (let j = 0; j < chunks.length; j++) {
+      tasks.push({
+        globalIndex: globalIndex++,
+        articleIndex: i,
+        isFirstChunkOfArticle: j === 0,
+        text: chunks[j]
+      });
+    }
+  }
+
+  const totalChunks = tasks.length;
+  let processedChunks = 0;
+  
+  // Limit concurrent Gradio connections to 3 to prevent overwhelming the free Space
+  const concurrency = 3; 
+  const queue = [...tasks];
+
+  const worker = async () => {
+    while (queue.length > 0) {
       if (isCancelled()) throw new Error("Cancelled by user");
-      
-      onProgress(`Generating chunk ${processedChunks + 1} of ${totalChunks}...`, 60 + Math.floor((processedChunks / totalChunks) * 20));
+      const task = queue.shift()!;
       
       let success = false;
       let retries = 3;
@@ -109,7 +125,7 @@ export async function generateAndStitchAudio(
       while (!success && retries > 0) {
         if (isCancelled()) throw new Error("Cancelled by user");
         try {
-          const result: any = await client.predict("/synthesize", [chunks[j]]);
+          const result: any = await client.predict("/synthesize", [task.text]);
           const audioData = result.data[0];
 
           let audioBlob: Blob;
@@ -120,24 +136,46 @@ export async function generateAndStitchAudio(
             throw new Error("Unrecognized audio format returned from HF Space.");
           }
 
-          const chunkDuration = await getDuration(audioBlob);
-          currentDurationSeconds += chunkDuration;
-          audioBlobs.push(audioBlob);
-          
+          task.blob = audioBlob;
           success = true;
           processedChunks++;
+          onProgress(`Generating chunk ${processedChunks} of ${totalChunks}...`, 60 + Math.floor((processedChunks / totalChunks) * 20));
           
-          if (processedChunks < totalChunks) {
-             await delay(1000);
-          }
         } catch (err) {
           retries--;
-          console.warn(`Chunk ${processedChunks + 1} failed, retries left: ${retries}`, err);
+          console.warn(`Chunk ${task.globalIndex + 1} failed, retries left: ${retries}`, err);
           if (retries === 0) throw err;
           await delay(3000); 
         }
       }
     }
+  };
+
+  // Run workers concurrently
+  const workers = Array.from({ length: concurrency }, () => worker());
+  await Promise.all(workers);
+
+  // All tasks are complete. Reconstruct order and build timestamps.
+  onProgress("Processing generated audio...", 82);
+  let currentDurationSeconds = 0;
+  
+  // Sort back by index just in case
+  tasks.sort((a, b) => a.globalIndex - b.globalIndex);
+
+  for (const task of tasks) {
+    if (isCancelled()) throw new Error("Cancelled by user");
+    if (!task.blob) throw new Error(`Missing audio blob for chunk ${task.globalIndex}`);
+    
+    if (task.isFirstChunkOfArticle) {
+      timestamps.push({
+        title: articles[task.articleIndex].headline,
+        timeStr: formatTime(currentDurationSeconds)
+      });
+    }
+    
+    const chunkDuration = await getDuration(task.blob);
+    currentDurationSeconds += chunkDuration;
+    audioBlobs.push(task.blob);
   }
 
   onProgress("Stitching audio chunks together...", 85);
