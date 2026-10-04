@@ -13,12 +13,17 @@ export default function Home() {
   const [timestamps, setTimestamps] = useState<{title: string; timeStr: string}[]>([]);
   const [geminiModel, setGeminiModel] = useState("gemini-3.8-flash");
   
+  const [extractedText, setExtractedText] = useState<string | null>(null);
+  const [summaryData, setSummaryData] = useState<any | null>(null);
+
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const onDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       setFile(e.dataTransfer.files[0]);
+      setExtractedText(null);
+      setSummaryData(null);
     }
   }, []);
 
@@ -45,31 +50,40 @@ export default function Home() {
     const isCancelled = () => abortControllerRef.current?.signal.aborted || false;
     
     try {
-      setProgress({ stage: "Parsing PDF...", percent: 10 });
-      
-      // Phase 2 & 3: PDF Parsing & OCR
-      const text = await processPDF(file, (stage, percent) => {
-        setProgress({ stage, percent });
-      }, isCancelled);
+      let text = extractedText;
+      let summary = summaryData;
 
       if (!text) {
-         throw new Error("No text extracted from PDF");
+        setProgress({ stage: "Parsing PDF...", percent: 10 });
+        
+        // Phase 2 & 3: PDF Parsing & OCR
+        text = await processPDF(file, (stage, percent) => {
+          setProgress({ stage, percent });
+        }, isCancelled);
+
+        if (!text) {
+           throw new Error("No text extracted from PDF");
+        }
+        setExtractedText(text);
       }
       
-      setProgress({ stage: "Summarizing News with AI...", percent: 50 });
-      const summaryRes = await fetch("/api/summarize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, modelSelection: geminiModel }),
-        signal: abortControllerRef.current?.signal
-      });
-      
-      if (!summaryRes.ok) {
-        const errorData = await summaryRes.json();
-        throw new Error(errorData.error || "Failed to summarize text");
+      if (!summary) {
+        setProgress({ stage: "Summarizing News with AI...", percent: 50 });
+        const summaryRes = await fetch("/api/summarize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, modelSelection: geminiModel }),
+          signal: abortControllerRef.current?.signal
+        });
+        
+        if (!summaryRes.ok) {
+          const errorData = await summaryRes.json();
+          throw new Error(errorData.error || "Failed to summarize text");
+        }
+        
+        summary = (await summaryRes.json()).summary;
+        setSummaryData(summary);
       }
-      
-      const { summary } = await summaryRes.json();
       
       // Phase 4 & 5: Text to Speech & FFmpeg Stitching
       setProgress({ stage: "Generating Audio...", percent: 60 });
@@ -144,6 +158,8 @@ export default function Home() {
                       onChange={(e) => {
                         if (e.target.files && e.target.files.length > 0) {
                           setFile(e.target.files[0]);
+                          setExtractedText(null);
+                          setSummaryData(null);
                         }
                       }}
                     />
@@ -167,7 +183,7 @@ export default function Home() {
                       onClick={handleProcess}
                       className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl shadow-lg shadow-indigo-200 dark:shadow-none transition-colors font-semibold flex items-center justify-center gap-2 disabled:opacity-50 w-full"
                     >
-                      Start Conversion
+                      {summaryData ? "Retry Audio Generation" : (extractedText ? "Retry LLM Summarization" : "Start Conversion")}
                     </button>
                   </div>
                 )}
@@ -251,6 +267,8 @@ export default function Home() {
                     setAudioUrl(null);
                     setTimestamps([]);
                     setFile(null);
+                    setExtractedText(null);
+                    setSummaryData(null);
                     setProgress({ stage: "", percent: 0 });
                   }}
                   className="bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-6 py-3 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors font-semibold"
